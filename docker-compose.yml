@@ -1,0 +1,20 @@
+version: '3'
+services:
+  conducktor:
+    build:
+      context: ./
+      target: dev
+    container_name: conducktor
+    volumes:
+      - .:/app
+    ports:
+      - "8044:8044"
+    environment:
+      - NODE_ENV=development
+      - HOST_IP=192.168.1.44
+      - LOG_LEVEL=debug
+      - REDIS_HOST=192.168.1.44
+      - REDIS_PORT=6379
+      - PORT=8044
+      - TZ=Europe/Istanbul
+    restart: always

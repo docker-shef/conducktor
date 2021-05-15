@@ -1,0 +1,16 @@
+{
+    "development": {
+        "LOG_LEVEL": "debug",
+        "REDIS_HOST": "192.168.1.44",
+        "REDIS_PORT": "6379",
+        "HOST_IP": "192.168.1.44",
+        "PORT": "8044"
+    },
+    "production": {
+        "LOG_LEVEL": "info",
+        "REDIS_HOST": "",
+        "REDIS_PORT": "",
+        "HOST_IP": "",
+        "PORT": ""
+    }
+}
