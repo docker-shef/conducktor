@@ -3,17 +3,25 @@ const client = require("./redis-client");
 const axios = require("axios");
 const _ = require("lodash");
 
+const getRunners = async (justAliveOnes = true) => {
+    let runner_map = [];
+    let runnerKeys = await client.keysAsync("runner.*");
+    for (const runnerKey of runnerKeys) {
+        runnerValue = JSON.parse(await client.getAsync(runnerKey));
+        if (runnerValue.alive && justAliveOnes) {
+            runner_map.push({ key: runnerKey, containers: runnerValue.containers });
+        } else if (!justAliveOnes) {
+            runner_map.push({ key: runnerKey, containers: runnerValue.containers });
+        }
+    }
+    return runner_map;
+}
+
 const balanceContainers = async (opts, create = true) => {
     let schedule_map = [];
     let runner_map = [];
     if (create) {
-        let runnerKeys = await client.keysAsync("runner.*");
-        for (const runnerKey of runnerKeys) {
-            runnerValue = JSON.parse(await client.getAsync(runnerKey));
-            if (runnerValue.alive) {
-                runner_map.push({ key: runnerKey, containers: runnerValue.containers });
-            }
-        }
+        runner_map = await getRunners(true);
         let tmpContainerCounts = runner_map.map((obj) => obj.containers.length);
 
         for (let i = opts.replicas; i > 0; i--) {
@@ -62,11 +70,14 @@ const createContainersToRunners = async (runners, opts) => {
         if (res !== false) {
             opts.containers.push({ containerName: res.data.name, runner: runners[i] })
         } else {
-            log.error(`Something wrong with runner: ${runners[i]} | skipping creation of this replica.`);
+            let runnerValue = JSON.parse(await client.getAsync(runners[i]));
+            await axios.get("http://" + runners[i].slice(7) + ":11044/health").catch(async (err) => {
+                log.info(`Something wrong with runner.${runners[i]}. Migrating containers!`);
+                runnerValue.alive = false;
+                await client.setAsync(runners[i], JSON.stringify(runnerValue));
+            });
+            throw (`Something wrong with runner: ${runners[i]} | couldn't create container.`);
         }
-    }
-    if (_.isEmpty(opts.containers)) {
-        throw "Couldn't create any container. Runners not working!";
     }
     return opts;
 }
@@ -80,6 +91,9 @@ const deleteContainersToRunners = async (runners, opts) => {
         } else {
             log.error(`Something wrong with runner: ${runners[i]} | skipping deletion of this replica. Runner can sync later.`);
             RandomContainers = opts.containers.filter(item => item.runner === runners[i]);
+            let runnerValue = JSON.parse(await client.getAsync(runners[i]));
+            runnerValue.containers = runnerValue.containers.filter(item => item.name !== RandomContainers[0].containerName);
+            await client.setAsync(runners[i], JSON.stringify(runnerValue));
             opts.containers = opts.containers.filter(item => item !== RandomContainers[0]);
         }
     }
@@ -88,12 +102,31 @@ const deleteContainersToRunners = async (runners, opts) => {
 
 const createService = async (opts) => {
     if (await client.getAsync("service." + opts.serviceName) !== null) throw "Service already exist!";
-    let scheduledRunners = await balanceContainers(opts, true);
     opts.containers = [];
-    let chagedOpts = await createContainersToRunners(scheduledRunners, opts);
-    chagedOpts.replicas = chagedOpts.containers.length;
-    await client.setAsync("service." + chagedOpts.serviceName, JSON.stringify(chagedOpts));
-    return { service: chagedOpts };
+    if (opts.replicas === 0) {
+        await client.setAsync("service." + opts.serviceName, JSON.stringify(opts));
+        return { service: opts };
+    } else {
+        for (let i = opts.replicas; i > 0; i--) {
+            let aliveRunners = await getRunners(true);
+            if (_.isEmpty(aliveRunners)) {
+                throw "Couldn't create any container. No alive runner!";
+            } else {
+                let tmpOpts = opts;
+                tmpOpts.replicas = 1;
+                let scheduledRunners = await balanceContainers(tmpOpts, true);
+                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                    opts.containers = res.containers;
+                }).catch(e => {
+                    log.error(e);
+                    i++
+                });
+            }
+        }
+        opts.replicas = opts.containers.length;
+        await client.setAsync("service." + opts.serviceName, JSON.stringify(opts));
+        return { service: opts };
+    }
 }
 
 const updateService = async (opts) => {
@@ -103,21 +136,40 @@ const updateService = async (opts) => {
     if (service.replicas < opts.replicas) {
         opts.image = service.image;
         opts.replicas = opts.replicas - service.replicas;
-        let scheduledRunners = await balanceContainers(opts, true);
         opts.containers = [];
-        let chagedOpts = await createContainersToRunners(scheduledRunners, opts);
-        service.replicas = service.replicas + chagedOpts.containers.length;
-        service.containers = [...service.containers, ...chagedOpts.containers];
+        for (let i = opts.replicas; i > 0; i--) {
+            let aliveRunners = await getRunners(true);
+            if (_.isEmpty(aliveRunners)) {
+                throw "Couldn't create any container. No alive runner!";
+            } else {
+                let tmpOpts = opts;
+                tmpOpts.replicas = 1;
+                let scheduledRunners = await balanceContainers(tmpOpts, true);
+                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                    opts.containers = res.containers;
+                }).catch(e => {
+                    log.error(e);
+                    i++
+                });
+            }
+        }
+        service.containers = [...service.containers, ...opts.containers];
+        service.replicas = service.containers.length;
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
         return { service: service };
     } else if (service.replicas > opts.replicas) {
         opts.image = service.image;
         opts.replicas = service.replicas - opts.replicas;
         opts.containers = service.containers;
-        let scheduledRunners = await balanceContainers(opts, false);
-        let chagedOpts = await deleteContainersToRunners(scheduledRunners, opts);
-        service.replicas = service.replicas - chagedOpts.containers.length;
-        service.containers = chagedOpts.containers;
+        for (let i = opts.replicas; i > 0; i--) {
+            let tmpOpts = service;
+            tmpOpts.replicas = 1;
+            let scheduledRunners = await balanceContainers(tmpOpts, false);
+            await deleteContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                service.containers = res.containers;
+            });
+        }
+        service.replicas = service.containers.length;
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
         return { service: service };
     } else {
@@ -129,8 +181,14 @@ const deleteService = async (opts) => {
     let service = await client.getAsync("service." + opts.serviceName);
     if (_.isEmpty(service)) throw "No service in this name!";
     service = JSON.parse(service);
-    let scheduledRunners = await balanceContainers(service, false);
-    await deleteContainersToRunners(scheduledRunners, service);
+    for (let i = service.replicas; i > 0; i--) {
+        let tmpOpts = service;
+        tmpOpts.replicas = 1;
+        let scheduledRunners = await balanceContainers(tmpOpts, false);
+        await deleteContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+            opts.containers = res.containers;
+        });
+    }
     await client.delAsync("service." + service.serviceName);
     return { message: `Service ${service.serviceName} deleted.` };
 }
@@ -153,15 +211,29 @@ const migrateRunnerContainers = async (runner) => {
         let opts = {
             "serviceName": container.serviceName,
             "image": container.image,
-            "replica": 1
+            "replica": 1,
+            "containers": []
         }
-        let scheduledRunners = await balanceContainers(opts, true);
-        opts.containers = [];
-        let chagedOpts = await createContainersToRunners(scheduledRunners, opts);
-        service.replicas = service.replicas + chagedOpts.containers.length;
-        service.containers = [...service.containers, ...chagedOpts.containers];
+        for (let i = opts.replicas; i > 0; i--) {
+            let aliveRunners = await getRunners(true);
+            if (_.isEmpty(aliveRunners)) {
+                throw "Couldn't create any container. No alive runner!";
+            } else {
+                let tmpOpts = opts;
+                tmpOpts.replicas = 1;
+                let scheduledRunners = await balanceContainers(tmpOpts, true);
+                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                    opts.containers = res.containers;
+                }).catch(e => {
+                    log.error(e);
+                    i++
+                });
+
+            }
+        }
+        service.replicas = service.replicas + opts.containers.length;
+        service.containers = [...service.containers, ...opts.containers];
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
-        return { service: chagedOpts };
     }
 }
 

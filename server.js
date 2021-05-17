@@ -5,8 +5,8 @@ const { log } = require("./config/config.js");
 const express = require("express");
 const schema = require("./src/validators");
 const { validateResourceMW } = require("./src/validateResource");
-const schedule = require("./src/schedule");
 const state = require("./src/state");
+const schedule = require("./src/schedule");
 
 log.info("Log level:", global.gConfig.LOG_LEVEL);
 
@@ -81,7 +81,7 @@ async function initConducktor() {
             try {
                 let services = await state.getAllServices();
                 let nodes = await state.getAllNode();
-                let runners = await state.getAllRunners();
+                let runners = await state.getAllRunners("all");
                 log.debug(JSON.stringify({ nodes: nodes, runners: runners, services: services }));
                 res.json({ nodes: nodes, runners: runners, services: services });
             } catch (err) {
@@ -124,7 +124,7 @@ async function initConducktor() {
             } catch (err) {
                 log.fatal("Something wrong.", err);
             }
-        }, 90000);
+        }, 20000);
     } catch (err) {
         throw log.fatal(err);
     }

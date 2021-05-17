@@ -2,8 +2,7 @@ const { log } = require("../config/config.js");
 const client = require("./redis-client");
 const axios = require("axios");
 const _ = require("lodash");
-const { migrateRunnerContainers } = require("./schedule");
-const moment = require('moment')
+const schedule = require("./schedule");
 
 const getAllServices = async () => {
     let service_map = [];
@@ -25,36 +24,61 @@ const getAllNode = async () => {
     return nodes_map;
 }
 
-const getAllRunners = async () => {
+const getAllRunners = async (which = "alive") => {
     let runner_map = [];
     let runnerKeys = await client.keysAsync("runner.*");
     for (const runnerKey of runnerKeys) {
         runnerValue = JSON.parse(await client.getAsync(runnerKey));
-        runner_map.push(runnerValue);
+        if (runnerValue.alive && which === "alive") {
+            runner_map.push(runnerValue);
+        } else if (!runnerValue.alive && which === "failed") {
+            runner_map.push(runnerValue);
+        } else if (which === "all") {
+            runner_map.push(runnerValue);
+        }
     }
     return runner_map;
 }
 
 const checkRunners = async () => {
-    let runner_map = [];
-    let runnerKeys = await client.keysAsync("runner.*");
-    for (const runnerKey of runnerKeys) {
-        runnerValue = JSON.parse(await client.getAsync(runnerKey));
-        if (runnerValue.alive) {
-            runner_map.push(runnerValue);
-        }
-    }
+    let runner_map = await getAllRunners("alive");
     for (const runner of runner_map) {
-        let res = await axios.get("http://" + runner.runnerName + ":11044/health").catch(async (err) => {
-            log.info(`Something wrong with runner.${runner.runnerName}. If there are any other runners will migrating containers!`);
+        let breakLoop = false;
+        await axios.get("http://" + runner.runnerName + ":11044/health").catch(async (err) => {
+            log.info(`Something wrong with runner.${runner.runnerName}. Migrating containers!`);
             runner.alive = false;
             await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
+            if (runner_map.length <= 1) {
+                log.info(`Something wrong with runner.${runner.runnerName} and there is no alive runner. Will wait for active runners to migrate services.`);
+                breakLoop = true;
+            }
             if (runner_map.length > 1 && !_.isEmpty(runner.containers)) {
-                await migrateRunnerContainers(runner.runnerName);
+                await schedule.migrateRunnerContainers(runner.runnerName);
                 runner.containers = [];
                 await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
             }
         });
+        if (breakLoop) break;
+    }
+    let aliveRunner_map = await getAllRunners("alive");
+    runner_map = await getAllRunners("failed");
+    for (const runner of runner_map) {
+        if (_.isEmpty(runner.containers)) continue;
+        let breakLoop = false;
+        await axios.get("http://" + runner.runnerName + ":11044/health").then(async res => {
+            runner.alive = true;
+            await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
+        }).catch(async (err) => {
+            if (aliveRunner_map.length > 1 && !_.isEmpty(runner.containers)) {
+                log.info(`Migrating containers from dead runner runner.${runner.runnerName} to alive ones.`);
+                await schedule.migrateRunnerContainers(runner.runnerName);
+                runner.containers = [];
+                await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
+            } else {
+                log.info(`Still waiting for active runners to migrate containers from runner.${runner.runnerName}.`);
+            }
+        });
+        if (breakLoop) break;
     }
 }
 
