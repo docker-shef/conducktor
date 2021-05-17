@@ -5,6 +5,8 @@ services:
       context: ./
       target: dev
     container_name: conducktor
+    labels:
+      - "shef-conducktor=true"
     volumes:
       - .:/app
     ports:

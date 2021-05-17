@@ -3,11 +3,7 @@ const yup = require("yup");
 const createServiceSchema = yup.object({
     serviceName: yup.string().trim().required(),
     replicas: yup.number().min(0).integer().default(1),
-    image: yup.string().trim().required(),
-    exposedPorts: yup.array(yup.string().matches(/(\d{2,5})/).trim()).default([]),
-    mounts: yup.array(yup.string().trim()).default([]),
-    commands: yup.array(yup.string().trim()).default([]),
-    environments: yup.array(yup.string().trim()).default([]),
+    image: yup.string().trim().required()
 }).noUnknown().strict();
 
 const getServiceSchema = yup.object({
@@ -16,19 +12,25 @@ const getServiceSchema = yup.object({
 
 const updateServiceSchema = yup.object({
     serviceName: yup.string().trim().required(),
-    replicas: yup.number().min(0).integer(),
-    image: yup.string().trim(),
-    exposedPorts: yup.array(yup.string().matches(/(\d{2,5})/).trim()),
-    mounts: yup.array(yup.string().trim()),
-    commands: yup.array(yup.string().trim()),
-    environments: yup.array(yup.string().trim()),
+    replicas: yup.number().min(0).integer().required()
 }).noUnknown().strict();
 
 const runnerSchema = yup.object({
     runnerName: yup.string().trim().required(),
-    containerCount: yup.number().min(0).integer().required(),
+    containers: yup.array(yup.object()).default([]).required(),
     alive: yup.boolean().default(true),
     lastAlive: yup.date().default(() => new Date().toISOString()),
 }).noUnknown().strict();
 
-module.exports = { createServiceSchema, getServiceSchema, updateServiceSchema, runnerSchema };
+const getRunnerSchema = yup.object({
+    runnerName: yup.string().trim().required()
+});
+
+const nodesSchema = yup.object({
+    node: yup.string().trim().required(),
+    master: yup.boolean().required(),
+    alive: yup.boolean().default(true),
+    lastAlive: yup.date().default(() => new Date().toISOString()),
+}).noUnknown().strict();
+
+module.exports = { createServiceSchema, getServiceSchema, updateServiceSchema, runnerSchema , getRunnerSchema, nodesSchema };
