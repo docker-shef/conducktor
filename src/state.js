@@ -53,7 +53,7 @@ const checkRunners = async () => {
                 breakLoop = true;
             }
             if (runner_map.length > 1 && !_.isEmpty(runner.containers)) {
-                await schedule.migrateRunnerContainers(runner.runnerName);
+                await schedule.migrateRunnerContainers(runner);
                 runner.containers = [];
                 await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
             }
@@ -69,11 +69,12 @@ const checkRunners = async () => {
             runner.alive = true;
             await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
         }).catch(async (err) => {
-            if (aliveRunner_map.length > 1 && !_.isEmpty(runner.containers)) {
+            if (aliveRunner_map.length > 0 && !_.isEmpty(runner.containers)) {
                 log.info(`Migrating containers from dead runner runner.${runner.runnerName} to alive ones.`);
-                await schedule.migrateRunnerContainers(runner.runnerName);
-                runner.containers = [];
-                await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
+                log.debug("sended runner:", runner);
+                await schedule.migrateRunnerContainers(runner);
+                // runner.containers = [];
+                // await client.setAsync("runner." + runner.runnerName, JSON.stringify(runner));
             } else {
                 log.info(`Still waiting for active runners to migrate containers from runner.${runner.runnerName}.`);
             }

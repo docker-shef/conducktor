@@ -63,21 +63,20 @@ const balanceContainers = async (opts, create = true) => {
     return schedule_map;
 }
 
-const createContainersToRunners = async (runners, opts) => {
-    for (let i = 0; i < runners.length; i++) {
-        let runnerUrl = "http://" + runners[i].slice(7) + ":11044";
-        const res = await axios.post(runnerUrl + "/container", { opts }).catch(e => false);
-        if (res !== false) {
-            opts.containers.push({ containerName: res.data.name, runner: runners[i] })
-        } else {
-            let runnerValue = JSON.parse(await client.getAsync(runners[i]));
-            await axios.get("http://" + runners[i].slice(7) + ":11044/health").catch(async (err) => {
-                log.info(`Something wrong with runner.${runners[i]}. Migrating containers!`);
-                runnerValue.alive = false;
-                await client.setAsync(runners[i], JSON.stringify(runnerValue));
-            });
-            throw (`Something wrong with runner: ${runners[i]} | couldn't create container.`);
-        }
+const createContainersToRunners = async (runner, opts) => {
+    let runnerUrl = "http://" + runner.slice(7) + ":11044";
+    const res = await axios.post(runnerUrl + "/container", { opts }).then(res => {
+        opts.containers.push({ containerName: res.data.name, runner: runner });
+        return true;
+    }).catch(e => false);
+    if (!res) {
+        let runnerValue = JSON.parse(await client.getAsync(runner));
+        await axios.get("http://" + runner.slice(7) + ":11044/health").catch(async (err) => {
+            log.info(`Something wrong with runner.${runner}. Migrating containers!`);
+            runnerValue.alive = false;
+            await client.setAsync(runner, JSON.stringify(runnerValue));
+        });
+        throw (`Something wrong with runner: ${runner} | couldn't create container.`);
     }
     return opts;
 }
@@ -115,7 +114,7 @@ const createService = async (opts) => {
                 let tmpOpts = opts;
                 tmpOpts.replicas = 1;
                 let scheduledRunners = await balanceContainers(tmpOpts, true);
-                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                await createContainersToRunners(scheduledRunners[0], tmpOpts).then(res => {
                     opts.containers = res.containers;
                 }).catch(e => {
                     log.error(e);
@@ -145,7 +144,7 @@ const updateService = async (opts) => {
                 let tmpOpts = opts;
                 tmpOpts.replicas = 1;
                 let scheduledRunners = await balanceContainers(tmpOpts, true);
-                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                await createContainersToRunners(scheduledRunners[0], tmpOpts).then(res => {
                     opts.containers = res.containers;
                 }).catch(e => {
                     log.error(e);
@@ -158,9 +157,8 @@ const updateService = async (opts) => {
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
         return { service: service };
     } else if (service.replicas > opts.replicas) {
-        opts.image = service.image;
         opts.replicas = service.replicas - opts.replicas;
-        opts.containers = service.containers;
+        log.debug("replicaDiff:", opts.replicas);
         for (let i = opts.replicas; i > 0; i--) {
             let tmpOpts = service;
             tmpOpts.replicas = 1;
@@ -205,14 +203,16 @@ const getService = async (opts) => {
 const migrateRunnerContainers = async (runner) => {
     for (const container of runner.containers) {
         log.info(`Migrating containers for runner: ${runner.runnerName}`);
-        let service = await client.getAsync("service." + container.serviceName);
-        service.containers.filter((item) => item.runner !== ("runner." + runner.runnerName));
+        let service = JSON.parse(await client.getAsync("service." + container.serviceName));
+        log.debug("service before:", service);
+        service.containers = service.containers.filter(item => item.runner !== ("runner." + runner.runnerName));
         service.replicas = service.replicas - 1;
+        log.debug("service later:", service);
         let opts = {
-            "serviceName": container.serviceName,
-            "image": container.image,
-            "replica": 1,
-            "containers": []
+            serviceName: service.serviceName,
+            image: service.image,
+            replicas: 1,
+            containers: []
         }
         for (let i = opts.replicas; i > 0; i--) {
             let aliveRunners = await getRunners(true);
@@ -222,13 +222,12 @@ const migrateRunnerContainers = async (runner) => {
                 let tmpOpts = opts;
                 tmpOpts.replicas = 1;
                 let scheduledRunners = await balanceContainers(tmpOpts, true);
-                await createContainersToRunners(scheduledRunners, tmpOpts).then(res => {
+                await createContainersToRunners(scheduledRunners[0], tmpOpts).then(res => {
                     opts.containers = res.containers;
                 }).catch(e => {
                     log.error(e);
                     i++
                 });
-
             }
         }
         service.replicas = service.replicas + opts.containers.length;
