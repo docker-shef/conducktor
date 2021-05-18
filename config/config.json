@@ -9,8 +9,8 @@
     "production": {
         "LOG_LEVEL": "info",
         "REDIS_HOST": "",
-        "REDIS_PORT": "",
+        "REDIS_PORT": "6379",
         "HOST_IP": "",
-        "PORT": ""
+        "PORT": "8044"
     }
 }
