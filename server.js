@@ -7,6 +7,7 @@ const schema = require("./src/validators");
 const { validateResourceMW } = require("./src/validateResource");
 const state = require("./src/state");
 const schedule = require("./src/schedule");
+const stats = require("./src/stats");
 
 log.info("Log level:", global.gConfig.LOG_LEVEL);
 
@@ -34,9 +35,11 @@ async function initConducktor() {
                 let getRes = await schedule.getService(service);
                 log.debug(JSON.stringify(getRes));
                 res.json(getRes);
+                stats.successfulProcessedRequest();
             } catch (err) {
                 log.error(err);
                 res.status(404).json({ error: err });
+                stats.failedProcessedRequest();
             }
         });
 
@@ -45,23 +48,28 @@ async function initConducktor() {
                 const service = schema.createServiceSchema.cast(req.body);
                 let createRes = await schedule.createService(service);
                 log.info(`Creating service ${service.serviceName}`);
-                log.debug(JSON.stringify(createRes));
+                stats.successfullyProcessedRequest();
+                stats.createdServices();
+                stats.createdContainers(createRes.service.replicas);
                 res.json(createRes);
             } catch (err) {
                 log.error(err);
                 res.status(409).json({ error: err });
+                stats.failedProcessedRequest();
             }
         });
 
         app.put("/service", validateResourceMW(schema.updateServiceSchema), async (req, res) => {
             try {
                 const service = schema.updateServiceSchema.cast(req.body);
+                log.debug("service1: ", service);
                 let updateRes = await schedule.updateService(service);
-                log.debug(JSON.stringify(updateRes));
+                stats.successfullyProcessedRequest();
                 res.json(updateRes);
             } catch (err) {
                 log.error(err);
                 res.status(409).json({ error: err });
+                stats.failedProcessedRequest();
             }
         });
 
@@ -71,9 +79,12 @@ async function initConducktor() {
                 let deleteRes = await schedule.deleteService(service);
                 log.debug(JSON.stringify(deleteRes));
                 res.json(deleteRes);
+                stats.successfullyProcessedRequest();
+                stats.deletedServices();
             } catch (err) {
                 log.error(err);
                 res.status(409).json({ error: err });
+                stats.failedProcessedRequest();
             }
         });
 
@@ -84,9 +95,22 @@ async function initConducktor() {
                 let runners = await state.getAllRunners("all");
                 log.debug(JSON.stringify({ nodes: nodes, runners: runners, services: services }));
                 res.json({ nodes: nodes, runners: runners, services: services });
+                stats.successfullyProcessedRequest();
             } catch (err) {
                 log.error(err);
                 res.status(404).json({ error: err });
+                stats.failedProcessedRequest();
+            }
+        });
+        app.get("/stats", async (req, res) => {
+            try {
+                let reply = await stats.getAllStats();
+                res.json(reply);
+                stats.successfullyProcessedRequest();
+            } catch (err) {
+                log.error(err);
+                res.status(404).json({ error: err });
+                stats.failedProcessedRequest();
             }
         });
 

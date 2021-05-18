@@ -2,6 +2,7 @@ const { log } = require("../config/config.js");
 const client = require("./redis-client");
 const axios = require("axios");
 const _ = require("lodash");
+const stats = require("./stats");
 
 const getRunners = async (justAliveOnes = true) => {
     let runner_map = [];
@@ -30,33 +31,33 @@ const balanceContainers = async (opts, create = true) => {
             tmpContainerCounts[unbalancedRunner]++;
         }
     } else {
+        let aliveRunners = await getRunners(true);
         let serviceSpecificRunner_map = []
-        for (const container of opts.containers) {
-            runnerValue = JSON.parse(await client.getAsync(container.runner));
+        for (const runner of aliveRunners) {
             let serviceSpecificContainers = []
-            for (const serviceContainer of runnerValue.containers) {
-                if (serviceContainer.serviceName == opts.serviceName) {
-                    serviceSpecificContainers.push(serviceContainer);
+            for (const container of runner.containers) {
+                if (container.serviceName == opts.serviceName) {
+                    serviceSpecificContainers.push(container);
                 }
             }
             if (!_.isEmpty(serviceSpecificContainers)) {
-                runner_map.push({ key: container.runner, containers: runnerValue.containers });
-                serviceSpecificRunner_map.push({ key: container.runner, containers: serviceSpecificContainers });
+                runner_map.push({ key: runner.key, containers: runner.containers });
+                serviceSpecificRunner_map.push({ key: runner.key, containers: serviceSpecificContainers });
             }
         }
-        let tmpSpesificContainerCounts = serviceSpecificRunner_map.map((obj) => obj.containers.length);
+        let tmpSpecificContainerCounts = serviceSpecificRunner_map.map((obj) => obj.containers.length);
         let tmpGeneralContainerCounts = runner_map.map((obj) => obj.containers.length);
         for (let i = opts.replicas; i > 0; i--) {
             let unbalancedRunner = tmpGeneralContainerCounts.indexOf(Math.max(...tmpGeneralContainerCounts));
             schedule_map.push(runner_map[unbalancedRunner].key);
-            if (tmpSpesificContainerCounts[unbalancedRunner] == 1) {
+            if (tmpSpecificContainerCounts[unbalancedRunner] == 1) {
                 runner_map = runner_map.filter(item => item !== runner_map[unbalancedRunner]);
                 serviceSpecificRunner_map = serviceSpecificRunner_map.filter(item => item !== serviceSpecificRunner_map[unbalancedRunner]);
-                tmpSpesificContainerCounts = serviceSpecificRunner_map.map((obj) => obj.containers.length);
+                tmpSpecificContainerCounts = serviceSpecificRunner_map.map((obj) => obj.containers.length);
                 tmpGeneralContainerCounts = runner_map.map((obj) => obj.containers.length);
             } else {
                 tmpGeneralContainerCounts[unbalancedRunner]--;
-                tmpSpesificContainerCounts[unbalancedRunner]--;
+                tmpSpecificContainerCounts[unbalancedRunner]--;
             }
         }
     }
@@ -83,14 +84,16 @@ const createContainersToRunners = async (runner, opts) => {
 
 const deleteContainersToRunners = async (runners, opts) => {
     for (let i = 0; i < runners.length; i++) {
+        let runnerValue = JSON.parse(await client.getAsync(runners[i]));
         let runnerUrl = "http://" + runners[i].slice(7) + ":11044";
         const res = await axios.delete(runnerUrl + "/container", { data: opts }).catch(e => false);
         if (res !== false) {
             opts.containers = opts.containers.filter(item => item.containerName !== res.data.name);
+            runnerValue.containers = runnerValue.containers.filter(item => item.name !== res.data.name);
+            await client.setAsync(runners[i], JSON.stringify(runnerValue));
         } else {
             log.error(`Something wrong with runner: ${runners[i]} | skipping deletion of this replica. Runner can sync later.`);
             RandomContainers = opts.containers.filter(item => item.runner === runners[i]);
-            let runnerValue = JSON.parse(await client.getAsync(runners[i]));
             runnerValue.containers = runnerValue.containers.filter(item => item.name !== RandomContainers[0].containerName);
             await client.setAsync(runners[i], JSON.stringify(runnerValue));
             opts.containers = opts.containers.filter(item => item !== RandomContainers[0]);
@@ -155,10 +158,10 @@ const updateService = async (opts) => {
         service.containers = [...service.containers, ...opts.containers];
         service.replicas = service.containers.length;
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
+        await stats.createdContainers(opts.containers.length);
         return { service: service };
     } else if (service.replicas > opts.replicas) {
         opts.replicas = service.replicas - opts.replicas;
-        log.debug("replicaDiff:", opts.replicas);
         for (let i = opts.replicas; i > 0; i--) {
             let tmpOpts = service;
             tmpOpts.replicas = 1;
@@ -169,6 +172,7 @@ const updateService = async (opts) => {
         }
         service.replicas = service.containers.length;
         await client.setAsync("service." + service.serviceName, JSON.stringify(service));
+        await stats.deletedContainers(opts.replicas);
         return { service: service };
     } else {
         throw "Same replica count already exist!";
@@ -179,6 +183,7 @@ const deleteService = async (opts) => {
     let service = await client.getAsync("service." + opts.serviceName);
     if (_.isEmpty(service)) throw "No service in this name!";
     service = JSON.parse(service);
+    let replicas = service.replicas;
     for (let i = service.replicas; i > 0; i--) {
         let tmpOpts = service;
         tmpOpts.replicas = 1;
@@ -188,6 +193,7 @@ const deleteService = async (opts) => {
         });
     }
     await client.delAsync("service." + service.serviceName);
+    await stats.deletedContainers(replicas);
     return { message: `Service ${service.serviceName} deleted.` };
 }
 
