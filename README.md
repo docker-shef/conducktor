@@ -6,7 +6,7 @@ Conducktor is API server and conduc(🦆)tor of the docker-shef system. It handl
 
 For docker-shef system details visit [here](https://github.com/docker-shef/docker-shef).
 
-## Conducktor Spesific Configurations
+## Conducktor Specific Configurations
 
 There is just 4 variables to configure Conducktor service manually:
 
